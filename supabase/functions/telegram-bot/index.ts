@@ -36,8 +36,9 @@ async function downloadFile(url: string): Promise<ArrayBuffer> {
 }
 
 // Function to store knowledge
-async function storeKnowledge(content: string, source: string, type: string) {
+async function storeKnowledge(userId: number, content: string, source: string, type: string) {
     const { error } = await supabase.from('knowledge').insert({
+        user_id: userId,
         content,
         source,
         file_type: type
@@ -46,13 +47,14 @@ async function storeKnowledge(content: string, source: string, type: string) {
 }
 
 // Function to retrieve relevant knowledge
-async function retrieveKnowledge(query: string) {
+async function retrieveKnowledge(userId: number, query: string) {
     if (!query) return '';
 
     // 1. Try Full Text Search
     const { data: searchData, error: searchError } = await supabase
         .from('knowledge')
         .select('content, source')
+        .eq('user_id', userId) // ISOLATION
         .textSearch('content', query, {
             type: 'websearch',
             config: 'spanish'
@@ -73,6 +75,7 @@ async function retrieveKnowledge(query: string) {
     const { data: recentData, error: recentError } = await supabase
         .from('knowledge')
         .select('content, source')
+        .eq('user_id', userId) // ISOLATION
         .order('created_at', { ascending: false })
         .limit(5);
 
@@ -123,11 +126,16 @@ async function sendLongMessage(ctx: any, text: string) {
 // --- Handlers ---
 
 // Security Middleware
-const ALLOWED_USER_ID = 6149934349;
+const AUTHORIZED_USERS = [
+    6149934349, // User A (Alfredo)
+    // 123456789, // User B (Invite) - Can be added here
+];
+
 bot.use(async (ctx, next) => {
-    if (ctx.from?.id !== ALLOWED_USER_ID) {
-        console.log(`Unauthorized access attempt from: ${ctx.from?.id}`);
-        await ctx.reply(`⛔ Access Denied. Your ID is ${ctx.from?.id}. This bot is private.`);
+    const userId = ctx.from?.id;
+    if (!userId || !AUTHORIZED_USERS.includes(userId)) {
+        console.log(`Unauthorized access attempt from: ${userId}`);
+        await ctx.reply(`⛔ Access Denied. Your ID is ${userId}. This bot is private.`);
         return;
     }
     return next();
@@ -194,7 +202,7 @@ bot.command('addmed', async (ctx) => {
 
     // Simple logging to Sheets
     const timestamp = new Date().toISOString();
-    await appendToSheet("Medications!A:E", [[timestamp, name, morning, evening, 'active']]);
+    await appendToSheet(ctx.from.id, "Medications!A:E", [[timestamp, name, morning, evening, 'active']]);
 
     await ctx.reply(`✅ ${name} registrado correctamente y guardado en Sheets.`);
 });
@@ -255,7 +263,7 @@ bot.on('callback_query', async (ctx) => {
             // 3. Log to Sheets (Slower, done last)
             try {
                 const timestamp = new Date().toISOString();
-                await appendToSheet("Medication History!A:C", [
+                await appendToSheet(userId, "Medication History!A:C", [
                     [timestamp, reminder.medications.name, reminder.slot]
                 ]);
             } catch (sheetErr) {
@@ -415,8 +423,8 @@ bot.on('document', async (ctx) => {
                         }
                     });
 
-                    if (examRows.length > 0) await appendToSheet("Medical Exams!A:G", examRows);
-                    if (logRows.length > 0) await appendToSheet("Health Logs!A:D", logRows);
+                    if (examRows.length > 0) await appendToSheet(ctx.from.id, "Medical Exams!A:G", examRows);
+                    if (logRows.length > 0) await appendToSheet(ctx.from.id, "Health Logs!A:D", logRows);
 
                     await ctx.reply(`✅ Successfully saved ${examRows.length} exams and ${logRows.length} logs.`);
                 }
@@ -431,7 +439,7 @@ bot.on('document', async (ctx) => {
                 finalContent = `[User Note: ${caption}]\n\n${finalContent}`;
             }
 
-            await storeKnowledge(finalContent, doc.file_name || 'untitled', doc.mime_type || 'unknown');
+            await storeKnowledge(ctx.from.id, finalContent, doc.file_name || 'untitled', doc.mime_type || 'unknown');
             await ctx.reply(`Imported ${doc.file_name} into my knowledge base.`);
 
         } else {
@@ -493,14 +501,14 @@ bot.on('photo', async (ctx) => {
                     v[3] || "Image", // Note/Detail
                     v[1] || "" // Value
                 ]);
-                await appendToSheet("Health Logs!A:D", rowsToAppend);
+                await appendToSheet(ctx.from.id, "Health Logs!A:D", rowsToAppend);
                 await ctx.reply("Measurements recorded in 'Health Logs'.");
             }
         } catch (jsonErr) {
             console.log("Image structured extraction failed or no data:", jsonErr);
         }
 
-        await storeKnowledge(description, 'Uploaded Image', 'image/jpeg');
+        await storeKnowledge(ctx.from.id, description, 'Uploaded Image', 'image/jpeg');
         await ctx.reply('Image stored: ' + description.substring(0, 100) + '...');
     } catch (e) {
         console.error(e);
@@ -544,7 +552,7 @@ bot.on('text', async (ctx) => {
                 if (data.type === "log") {
                     const timestamp = new Date().toISOString();
                     try {
-                        await appendToSheet("Health Logs!A:D", [[timestamp, data.category, data.detail, data.value]]);
+                        await appendToSheet(userId, "Health Logs!A:D", [[timestamp, data.category, data.detail, data.value]]);
                         await ctx.reply(`✅ Registrado ${data.category}: ${data.value} (${data.detail})`);
                     } catch (sheetErr) {
                         console.error("Sheet Log Error:", sheetErr);
@@ -569,7 +577,7 @@ bot.on('text', async (ctx) => {
 
                     const timestamp = new Date().toISOString();
                     try {
-                        await appendToSheet("Medications!A:G", [[
+                        await appendToSheet(userId, "Medications!A:G", [[
                             timestamp,
                             data.name,
                             data.morning,
@@ -616,12 +624,12 @@ bot.on('text', async (ctx) => {
             .limit(10);
 
         // 3. Retrieve Knowledge & Historical Sheet Data
-        const knowledge = await retrieveKnowledge(userText);
+        const knowledge = await retrieveKnowledge(userId, userText);
         let sheetContext = "";
 
         if (userText.toLowerCase().includes("compara") || userText.toLowerCase().includes("historial") || userText.toLowerCase().includes("evolución")) {
-            const exams = await getSheetValues("Medical Exams!A:G");
-            const logs = await getSheetValues("Health Logs!A:D");
+            const exams = await getSheetValues(userId, "Medical Exams!A:G");
+            const logs = await getSheetValues(userId, "Health Logs!A:D");
             sheetContext = `[Historical Health Data from Google Sheets]\nExams:\n${JSON.stringify(exams.slice(-20))}\n\nLogs:\n${JSON.stringify(logs.slice(-20))}`;
         }
 

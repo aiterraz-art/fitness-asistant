@@ -14,7 +14,6 @@ async function getAccessToken(): Promise<string> {
     const iat = Math.floor(Date.now() / 1000);
     const exp = iat + 3600;
 
-    const header = { alg: "RS256", typ: "JWT" };
     const payload = {
         iss: GOOGLE_SERVICE_ACCOUNT_EMAIL,
         sub: GOOGLE_SERVICE_ACCOUNT_EMAIL,
@@ -23,14 +22,6 @@ async function getAccessToken(): Promise<string> {
         exp,
         scope: "https://www.googleapis.com/auth/spreadsheets",
     };
-
-    // Note: In Deno Edge Functions, we typically use a library or manual signing for RS256
-    // Since we don't have 'fs' or easy 'crypto' for PEM, we'll use a fetch-based approach 
-    // or a standard library if available. For simplicity in this environment, 
-    // we'll assume a helper or manual signing.
-
-    // Better approach for Deno: Use 'https://deno.land/x/google_auth@v0.0.1/mod.ts' or similar
-    // However, to keep it dependency-light and robust for Edge:
 
     const response = await fetch("https://oauth2.googleapis.com/token", {
         method: "POST",
@@ -59,30 +50,22 @@ async function signJWT(payload: any): Promise<string> {
 
     const dataToSign = `${base64Header}.${base64Payload}`;
 
-    // Convert PEM to ArrayBuffer
-    // 1. Remove optional surrounding quotes
     let cleanKey = GOOGLE_PRIVATE_KEY!.trim();
     if (cleanKey.startsWith('"') && cleanKey.endsWith('"')) {
         cleanKey = cleanKey.slice(1, -1);
     }
-    // 2. Remove PEM headers/footers and ALL whitespace/escaping
     const pem = cleanKey
         .replace(/-----BEGIN PRIVATE KEY-----/g, "")
         .replace(/-----END PRIVATE KEY-----/g, "")
-        .replace(/\\n/g, "") // Remove literal \n sequences
-        .replace(/\\r/g, "") // Remove literal \r sequences
-        .replace(/\s/g, ""); // Strips all whitespace including real newlines
+        .replace(/\\n/g, "")
+        .replace(/\\r/g, "")
+        .replace(/\s/g, "");
 
     let binaryKey;
     try {
-        // Use a more robust base64 decoder that ignores invalid characters if needed
-        // but for now, just atob the fully cleaned string
         binaryKey = Uint8Array.from(atob(pem), c => c.charCodeAt(0));
     } catch (e) {
-        console.error("PEM Base64 decoding failed. Cleaned length:", pem.length);
-        console.error("PEM snippet (start):", pem.substring(0, 30));
-        console.error("PEM snippet (end):", pem.substring(pem.length - 30));
-        throw new Error(`Failed to decode base64: ${e.message}. Cleaned length: ${pem.length}. Verify GOOGLE_PRIVATE_KEY in Supabase secrets.`);
+        throw new Error(`Failed to decode base64: ${e.message}.`);
     }
 
     const key = await crypto.subtle.importKey(
@@ -110,16 +93,21 @@ function b64Encode(uint8: Uint8Array): string {
         .replace(/=+$/, "");
 }
 
-export async function appendToSheet(range: string, values: any[][]) {
+// Updated to accept userId
+export async function appendToSheet(userId: number, range: string, values: any[][]) {
     const token = await getAccessToken();
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${range}:append?valueInputOption=USER_ENTERED`;
+
+    // Prepend UserId to each row
+    const rowsWithUser = values.map(row => [userId, ...row]);
+
     const response = await fetch(url, {
         method: "POST",
         headers: {
             Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
         },
-        body: JSON.stringify({ values }),
+        body: JSON.stringify({ values: rowsWithUser }),
     });
 
     if (!response.ok) {
@@ -127,11 +115,12 @@ export async function appendToSheet(range: string, values: any[][]) {
         console.error(`Sheet Append Error [URL: ${url}]: ${err}`);
         throw new Error(`Google Sheets API Error: ${err}`);
     }
-    console.log(`Successfully appended to range: ${range}`);
+    console.log(`Successfully appended to range: ${range} for user ${userId}`);
     return await response.json();
 }
 
-export async function getSheetValues(range: string): Promise<any[][]> {
+// Updated to filter by userId
+export async function getSheetValues(userId: number, range: string): Promise<any[][]> {
     const token = await getAccessToken();
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/${range}`;
 
@@ -144,5 +133,9 @@ export async function getSheetValues(range: string): Promise<any[][]> {
         throw new Error(`Sheet Read Error: ${err}`);
     }
     const data = await response.json();
-    return data.values || [];
+    const allRows = data.values || [];
+
+    // Filter rows where the first column matches the userId
+    // Note: Sheets API returns strings mostly, so loose equality or string conversation is safer
+    return allRows.filter((row: any[]) => row[0] == userId);
 }
