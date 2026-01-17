@@ -1,0 +1,10 @@
+{
+    "tasks": {
+        "start": "deno run --allow-net --allow-env index.ts"
+    },
+    "imports": {
+        "telegraf": "npm:telegraf@4.16.3",
+        "@google/generative-ai": "npm:@google/generative-ai",
+        "@supabase/supabase-js": "jsr:@supabase/supabase-js@2"
+    }
+}

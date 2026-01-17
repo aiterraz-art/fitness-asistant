@@ -1,0 +1,19 @@
+# Node components
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Environment variables and secrets
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.supabase/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Misc
+*.log
